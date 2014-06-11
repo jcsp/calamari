@@ -27,34 +27,52 @@ def fire_event(data, tag):
     """
     __salt__['event.fire_master'](data, tag)  # noqa
 
-try:
-    import rados
-    from ceph_argparse import parse_json_funcsigs, validate_command, json_command
-except ImportError:
-    rados = None
-    parse_json_funcsigs = None
-    validate_command = None
-    json_command = None
 
-    class CephError(object):
+def try_rados_import():
+    """
+    Get rados/ceph_argparse if they're available.  In a method so it
+    can be retried if it fails, but modifies module state, hence all
+    the globals.
+    """
+    global rados
+    global parse_json_funcsigs, validate_command, json_command
+    global RadosError, AdminSocketError
+
+    try:
+        import rados
+        from ceph_argparse import parse_json_funcsigs, validate_command,
+                                  json_command
+        exception_class = rados.Error
+        return rados
+
+    except ImportError:
+        rados = None
+        parse_json_funcsigs = None
+        validate_command = None
+        json_command = None
+        exception_class = Exception
+
+
+    class RadosError(exception_class):
+        """
+        Something went wrong talking to Ceph with librados
+        """
         pass
-else:
-    class CephError(rados.Error):
+
+
+    class AdminSocketError(exception_class):
+        """
+        Something went wrong talking to Ceph with a /var/run/ceph socket.
+        """
         pass
 
 
-class RadosError(CephError):
-    """
-    Something went wrong talking to Ceph with librados
-    """
-    pass
+    return None
 
 
-class AdminSocketError(CephError):
-    """
-    Something went wrong talking to Ceph with a /var/run/ceph socket.
-    """
-    pass
+# try to get it now.  Retry below if it fails.
+
+try_rados_import()
 
 
 def rados_command(cluster_handle, prefix, args=None, decode=True):
@@ -378,13 +396,15 @@ def get_heartbeats():
     """
 
     if rados is None:
-        # Ceph isn't installed, report no services or clusters
-        server_heartbeat = {
-            'services': {},
-            'boot_time': get_boot_time(),
-            'ceph_version': None
-        }
-        return server_heartbeat, {}
+        # try to import again; it might have become available
+        if try_rados_import() is None:
+            # Ceph isn't installed, report no services or clusters
+            server_heartbeat = {
+                'services': {},
+                'boot_time': get_boot_time(),
+                'ceph_version': None
+            }
+            return server_heartbeat, {}
 
     # Map of FSID to path string string
     mon_sockets = {}
